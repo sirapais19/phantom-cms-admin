@@ -1,7 +1,10 @@
 // API Configuration
 
 // Toggle this to use mock data when backend is not available
-export const USE_MOCK_DATA = true;
+export const USE_MOCK_DATA = false;
+
+// ✅ NEW: mock auth only (login/logout/me)
+export const USE_MOCK_AUTH = true;
 
 // API Base URL - set via environment variable
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api';

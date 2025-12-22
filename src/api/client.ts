@@ -1,6 +1,6 @@
 // API Client for Phantom CMS
 
-import { API_BASE_URL, USE_MOCK_DATA, ENDPOINTS, REQUEST_TIMEOUT } from './config';
+import { API_BASE_URL, USE_MOCK_DATA, USE_MOCK_AUTH, ENDPOINTS, REQUEST_TIMEOUT } from "./config";
 import {
   mockPlayers,
   mockAchievements,
@@ -29,20 +29,31 @@ import type {
   ApiResponse,
 } from '@/types';
 
-// Generic fetch wrapper with timeout
+// Generic fetch wrapper with timeout (Fix: avoid forcing preflight on GET)
 async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
   try {
+    const method = (options.method || "GET").toUpperCase();
+
+    // Start with Accept header only
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+      ...(options.headers as Record<string, string>),
+    };
+
+    // Only set Content-Type when you actually send a body (POST/PUT/PATCH)
+    if (options.body && method !== "GET") {
+      headers["Content-Type"] = "application/json";
+    }
+
     const response = await fetch(url, {
       ...options,
       signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        ...options.headers,
-      },
+      headers,
     });
+
     clearTimeout(timeoutId);
     return response;
   } catch (error) {
@@ -50,6 +61,7 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise
     throw error;
   }
 }
+
 
 // Generic API request handler
 async function apiRequest<T>(
@@ -77,29 +89,31 @@ async function apiRequest<T>(
 
 export const authApi = {
   login: async (email: string, password: string): Promise<ApiResponse<User>> => {
-    if (USE_MOCK_DATA) {
-      await new Promise(resolve => setTimeout(resolve, 500));
-      if (email === 'admin@phantom.team' && password === 'phantom123') {
-        return { data: mockUser, message: 'Login successful' };
+    if (USE_MOCK_AUTH) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (email === "admin@phantom.team" && password === "phantom123") {
+        return { data: mockUser, message: "Login successful" };
       }
-      throw new Error('Invalid credentials');
+      throw new Error("Invalid credentials");
     }
+
     return apiRequest<ApiResponse<User>>(ENDPOINTS.auth.login, {
-      method: 'POST',
+      method: "POST",
       body: JSON.stringify({ email, password }),
     });
   },
 
   logout: async (): Promise<void> => {
-    if (USE_MOCK_DATA) {
-      await new Promise(resolve => setTimeout(resolve, 200));
+    if (USE_MOCK_AUTH) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
       return;
     }
-    await apiRequest<void>(ENDPOINTS.auth.logout, { method: 'POST' });
+    await apiRequest<void>(ENDPOINTS.auth.logout, { method: "POST" });
   },
 
   me: async (): Promise<User> => {
-    return apiRequest<User>(ENDPOINTS.auth.me, {}, mockUser);
+    if (USE_MOCK_AUTH) return mockUser;
+    return apiRequest<User>(ENDPOINTS.auth.me);
   },
 };
 

@@ -7,17 +7,124 @@ import { cn } from "@/lib/utils";
 interface UploadDropzoneProps {
   value?: string;
   onChange: (value: string | undefined) => void;
+
+  /**
+   * Example:
+   *  - "image/*"
+   *  - "image/png,image/jpeg,image/webp"
+   *  - ".png,.jpg,.jpeg,.webp"
+   */
   accept?: string;
+
+  /** Max ORIGINAL file size before processing (bytes) */
   maxSize?: number;
+
+  /**
+   * Max PROCESSED blob size (bytes) AFTER resize/compress.
+   * This is the important one to avoid huge base64 JSON payloads.
+   */
+  maxProcessedSize?: number;
+
+  /** Resize to this max width (keeps aspect ratio). Helps reduce payload. */
+  maxWidth?: number;
+
+  /** Output image mime type after processing */
+  outputType?: "image/jpeg" | "image/webp" | "image/png";
+
+  /** Compression quality (only applies to jpeg/webp) */
+  quality?: number;
+
   className?: string;
   placeholder?: string;
+}
+
+function bytesToMB(bytes: number) {
+  return Math.round((bytes / 1024 / 1024) * 10) / 10;
+}
+
+function parseAccept(accept: string) {
+  // supports "image/png,image/jpeg" OR ".png,.jpg" OR "image/*"
+  return accept
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function isFileAccepted(file: File, accept: string) {
+  const rules = parseAccept(accept);
+
+  // allow all images
+  if (rules.includes("image/*")) return file.type.startsWith("image/");
+
+  const fileName = file.name.toLowerCase();
+  const mime = (file.type || "").toLowerCase();
+
+  return rules.some((rule) => {
+    if (rule.startsWith(".")) return fileName.endsWith(rule);
+    return mime === rule; // mime match, e.g. image/jpeg
+  });
+}
+
+async function fileToDataUrl(fileOrBlob: Blob): Promise<string> {
+  return await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Failed to read file"));
+    reader.onload = () => resolve(reader.result as string);
+    reader.readAsDataURL(fileOrBlob);
+  });
+}
+
+async function compressAndResizeImage(
+  file: File,
+  maxWidth: number,
+  outputType: "image/jpeg" | "image/webp" | "image/png",
+  quality: number
+): Promise<Blob> {
+  const bitmap = await createImageBitmap(file);
+
+  const scale = bitmap.width > maxWidth ? maxWidth / bitmap.width : 1;
+  const targetW = Math.round(bitmap.width * scale);
+  const targetH = Math.round(bitmap.height * scale);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = targetW;
+  canvas.height = targetH;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas not supported");
+
+  ctx.drawImage(bitmap, 0, 0, targetW, targetH);
+
+  const blob: Blob = await new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error("Failed to compress image"))),
+      outputType,
+      outputType === "image/png" ? undefined : quality
+    );
+  });
+
+  return blob;
 }
 
 export function UploadDropzone({
   value,
   onChange,
-  accept = "image/*",
-  maxSize = 5 * 1024 * 1024, // 5MB
+
+  // ✅ allow JPG explicitly + common formats
+  accept = "image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp",
+
+  // ✅ allow big original file (before processing)
+  maxSize = 30 * 1024 * 1024, // 30MB
+
+  // ✅ limit processed blob to keep base64 JSON safe
+  // base64 adds ~33% size overhead, so keep processed <= ~12MB typically safe
+  maxProcessedSize = 12 * 1024 * 1024, // 12MB
+
+  // ✅ defaults that reduce payload
+  maxWidth = 1400,
+  outputType = "image/jpeg",
+  quality = 0.82,
+
   className,
   placeholder = "Drop an image here or click to upload",
 }: UploadDropzoneProps) {
@@ -25,19 +132,63 @@ export function UploadDropzone({
   const inputRef = React.useRef<HTMLInputElement>(null);
 
   const handleFile = useCallback(
-    (file: File) => {
-      if (file.size > maxSize) {
-        alert(`File size must be less than ${maxSize / 1024 / 1024}MB`);
+    async (file: File) => {
+      // 1) type validation
+      if (!isFileAccepted(file, accept)) {
+        alert(
+          `Invalid file type.\nAllowed: ${accept}\nSelected: ${file.type || file.name}`
+        );
         return;
       }
 
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        onChange(e.target?.result as string);
-      };
-      reader.readAsDataURL(file);
+      // 2) original size validation
+      if (file.size > maxSize) {
+        alert(
+          `File is too large.\nMax allowed: ${bytesToMB(
+            maxSize
+          )}MB\nSelected: ${bytesToMB(file.size)}MB`
+        );
+        return;
+      }
+
+      try {
+        // 3) compress + resize
+        const processedBlob = await compressAndResizeImage(
+          file,
+          maxWidth,
+          outputType,
+          quality
+        );
+
+        // 4) processed size validation (important)
+        if (processedBlob.size > maxProcessedSize) {
+          alert(
+            `Image is still too large after processing.\nProcessed: ${bytesToMB(
+              processedBlob.size
+            )}MB\nMax processed: ${bytesToMB(
+              maxProcessedSize
+            )}MB\n\nTry:\n- Use smaller image\n- Reduce maxWidth (e.g. 1000)\n- Reduce quality (e.g. 0.7)\n- Use WEBP outputType`
+          );
+          return;
+        }
+
+        // 5) convert to data URL
+        const dataUrl = await fileToDataUrl(processedBlob);
+        onChange(dataUrl);
+      } catch (err: any) {
+        console.error(err);
+        alert(err?.message || "Failed to process image");
+      }
     },
-    [maxSize, onChange]
+    [
+      accept,
+      maxSize,
+      maxProcessedSize,
+      maxWidth,
+      outputType,
+      quality,
+      onChange,
+    ]
   );
 
   const handleDrop = useCallback(
@@ -45,10 +196,8 @@ export function UploadDropzone({
       e.preventDefault();
       setIsDragging(false);
 
-      const file = e.dataTransfer.files[0];
-      if (file) {
-        handleFile(file);
-      }
+      const file = e.dataTransfer.files?.[0];
+      if (file) void handleFile(file);
     },
     [handleFile]
   );
@@ -56,9 +205,10 @@ export function UploadDropzone({
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
-      if (file) {
-        handleFile(file);
-      }
+      if (file) void handleFile(file);
+
+      // allow re-uploading same file again
+      e.target.value = "";
     },
     [handleFile]
   );
@@ -113,10 +263,17 @@ export function UploadDropzone({
                 <ImageIcon className="h-6 w-6 text-muted-foreground" />
               )}
             </div>
+
             <div>
               <p className="text-sm text-muted-foreground">{placeholder}</p>
               <p className="text-xs text-muted-foreground mt-1">
-                Max size: {maxSize / 1024 / 1024}MB
+                Allowed: {accept}
+                <br />
+                Max original size: {bytesToMB(maxSize)}MB
+                <br />
+                Max processed size: {bytesToMB(maxProcessedSize)}MB
+                <br />
+                Auto resize: max {maxWidth}px, export: {outputType}, q={quality}
               </p>
             </div>
           </div>
