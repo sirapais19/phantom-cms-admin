@@ -1,3 +1,5 @@
 // API exports
-export * from './client';
-export * from './config';
+export { dashboardApi } from "./dashboard";
+
+export * from "./client";
+export * from "./config";

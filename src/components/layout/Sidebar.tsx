@@ -5,7 +5,6 @@ import {
   LayoutDashboard,
   Users,
   Trophy,
-  Image,
   Calendar,
   Images,
   Video,
@@ -22,7 +21,10 @@ const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { name: "Roster", href: "/dashboard/roster", icon: Users },
   { name: "Achievements", href: "/dashboard/achievements", icon: Trophy },
-  { name: "Team Media", href: "/dashboard/team-media", icon: Image },
+
+  // ✅ HIDDEN: Team Media
+  // { name: "Team Media", href: "/dashboard/team-media", icon: Image },
+
   { name: "Schedule", href: "/dashboard/schedule", icon: Calendar },
   { name: "Gallery", href: "/dashboard/gallery", icon: Images },
   { name: "Videos", href: "/dashboard/videos", icon: Video },
@@ -68,9 +70,11 @@ export function Sidebar() {
       <nav className="flex-1 overflow-y-auto py-4 px-2">
         <ul className="space-y-1">
           {navigation.map((item) => {
-            const isActive = location.pathname === item.href || 
-              (item.href !== "/dashboard" && location.pathname.startsWith(item.href));
-            
+            const isActive =
+              location.pathname === item.href ||
+              (item.href !== "/dashboard" &&
+                location.pathname.startsWith(item.href));
+
             return (
               <li key={item.name}>
                 <Link
@@ -84,7 +88,12 @@ export function Sidebar() {
                   )}
                   title={isCollapsed ? item.name : undefined}
                 >
-                  <item.icon className={cn("h-5 w-5 shrink-0", isActive && "text-primary")} />
+                  <item.icon
+                    className={cn(
+                      "h-5 w-5 shrink-0",
+                      isActive && "text-primary"
+                    )}
+                  />
                   {!isCollapsed && <span>{item.name}</span>}
                 </Link>
               </li>
@@ -96,9 +105,7 @@ export function Sidebar() {
       {/* Version info */}
       {!isCollapsed && (
         <div className="p-4 border-t border-sidebar-border">
-          <p className="text-xs text-muted-foreground">
-            Phantom CMS v1.0.0
-          </p>
+          <p className="text-xs text-muted-foreground">Phantom CMS v1.0.0</p>
         </div>
       )}
     </aside>

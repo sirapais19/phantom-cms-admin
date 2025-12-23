@@ -49,13 +49,13 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatsCard
           title="Active Players"
-          value={stats?.totalPlayers || 0}
+          value={stats?.activePlayers || 0}
           icon={Users}
           description="Roster members"
         />
         <StatsCard
           title="Achievements"
-          value={stats?.totalAchievements || 0}
+          value={stats?.achievements || 0}
           icon={Trophy}
           description="All time"
         />
@@ -75,7 +75,9 @@ export default function Dashboard() {
 
       {/* Quick Actions */}
       <div className="bg-card border border-border rounded-xl p-6">
-        <h2 className="text-lg font-semibold text-foreground mb-4">Quick Actions</h2>
+        <h2 className="text-lg font-semibold text-foreground mb-4">
+          Quick Actions
+        </h2>
         <div className="flex flex-wrap gap-3">
           {quickActions.map((action) => (
             <Link key={action.label} to={action.href}>
@@ -91,7 +93,9 @@ export default function Dashboard() {
       {/* Recent Activity */}
       <div className="bg-card border border-border rounded-xl p-6">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-foreground">Recent Activity</h2>
+          <h2 className="text-lg font-semibold text-foreground">
+            Recent Activity
+          </h2>
           <Button variant="ghost" size="sm" className="text-muted-foreground">
             View all
             <ArrowRight className="h-4 w-4 ml-1" />
@@ -104,16 +108,24 @@ export default function Dashboard() {
           <div className="space-y-4">
             {activities.slice(0, 5).map((activity) => (
               <div
-                key={activity.id}
+                key={`${activity.type}-${activity.id}-${activity.timestamp}`}
                 className="flex items-start gap-4 p-3 rounded-lg hover:bg-secondary/50 transition-colors"
               >
                 <div className="p-2 rounded-lg bg-primary/10">
                   <Clock className="h-4 w-4 text-primary" />
                 </div>
+
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm text-foreground">{activity.description}</p>
+                  <p className="text-sm text-foreground">{activity.title}</p>
+                  {activity.subtitle ? (
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {activity.subtitle}
+                    </p>
+                  ) : null}
                   <p className="text-xs text-muted-foreground mt-1">
-                    {formatDistanceToNow(new Date(activity.timestamp), { addSuffix: true })}
+                    {formatDistanceToNow(new Date(activity.timestamp), {
+                      addSuffix: true,
+                    })}
                   </p>
                 </div>
               </div>

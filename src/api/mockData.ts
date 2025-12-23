@@ -17,7 +17,7 @@ import type {
 export const mockUser: User = {
   id: '1',
   email: 'admin@phantom.team',
-  name: 'Alex Morgan',
+  name: 'Phantom Admin',
   role: 'Admin',
   avatarUrl: undefined,
 };

@@ -45,11 +45,15 @@ const playerSchema = z.object({
   bio: z.string().optional(),
   photoUrl: z.string().optional(),
   status: z.enum(["active", "inactive"]),
-  socials: z.object({
-    instagram: z.string().optional(),
-    twitter: z.string().optional(),
-    linkedin: z.string().optional(),
-  }).optional(),
+  socials: z
+    .object({
+      instagram: z.string().optional(),
+      // ✅ change twitter -> tiktok
+      tiktok: z.string().optional(),
+      // ✅ change linkedin -> ultiscore
+      ultiscore: z.string().optional(),
+    })
+    .optional(),
 });
 
 type PlayerFormData = z.infer<typeof playerSchema>;
@@ -122,7 +126,11 @@ export default function Roster() {
     defaultValues: {
       status: "active",
       roleTag: "Player",
-      socials: {},
+      socials: {
+        instagram: "",
+        tiktok: "",
+        ultiscore: "",
+      },
     },
   });
 
@@ -138,7 +146,15 @@ export default function Roster() {
     setValue("bio", player.bio || "");
     setValue("photoUrl", player.photoUrl || "");
     setValue("status", player.status);
-    setValue("socials", player.socials || {});
+
+    // ✅ normalize socials keys (in case older data still has twitter/linkedin)
+    const socials: any = player.socials || {};
+    setValue("socials", {
+      instagram: socials.instagram || "",
+      tiktok: socials.tiktok || socials.twitter || "",
+      ultiscore: socials.ultiscore || socials.linkedin || "",
+    });
+
     setIsModalOpen(true);
   };
 
@@ -151,7 +167,9 @@ export default function Roster() {
     if (selectedPlayer) {
       updateMutation.mutate({ id: selectedPlayer.id, data });
     } else {
-      createMutation.mutate(data as Omit<Player, 'id' | 'createdAt' | 'updatedAt'>);
+      createMutation.mutate(
+        data as Omit<Player, "id" | "createdAt" | "updatedAt">
+      );
     }
   };
 
@@ -164,7 +182,8 @@ export default function Roster() {
   // Filter players
   const filteredPlayers = players.filter((player) => {
     if (roleFilter !== "all" && player.roleTag !== roleFilter) return false;
-    if (positionFilter !== "all" && player.position !== positionFilter) return false;
+    if (positionFilter !== "all" && player.position !== positionFilter)
+      return false;
     return true;
   });
 
@@ -196,9 +215,13 @@ export default function Roster() {
             </AvatarFallback>
           </Avatar>
           <div>
-            <p className="font-medium text-foreground">{row.original.fullName}</p>
+            <p className="font-medium text-foreground">
+              {row.original.fullName}
+            </p>
             {row.original.tagline && (
-              <p className="text-xs text-muted-foreground">{row.original.tagline}</p>
+              <p className="text-xs text-muted-foreground">
+                {row.original.tagline}
+              </p>
             )}
           </div>
         </div>
@@ -208,8 +231,12 @@ export default function Roster() {
       accessorKey: "roleTag",
       header: "Role",
       cell: ({ row }) => {
-        const variant = row.original.roleTag === "Captain" ? "published" : 
-                       row.original.roleTag === "Coach" ? "draft" : "default";
+        const variant =
+          row.original.roleTag === "Captain"
+            ? "published"
+            : row.original.roleTag === "Coach"
+            ? "draft"
+            : "default";
         return <StatusBadge status={row.original.roleTag} variant={variant} />;
       },
     },
@@ -331,7 +358,11 @@ export default function Roster() {
         open={isModalOpen}
         onOpenChange={handleCloseModal}
         title={selectedPlayer ? "Edit Player" : "Add Player"}
-        description={selectedPlayer ? "Update player information" : "Add a new player to the roster"}
+        description={
+          selectedPlayer
+            ? "Update player information"
+            : "Add a new player to the roster"
+        }
         onSubmit={handleSubmit(onSubmit)}
         isSubmitting={createMutation.isPending || updateMutation.isPending}
         submitLabel={selectedPlayer ? "Update" : "Add Player"}
@@ -359,7 +390,9 @@ export default function Roster() {
               className="bg-secondary border-border"
             />
             {errors.jerseyNumber && (
-              <p className="text-xs text-destructive">{errors.jerseyNumber.message}</p>
+              <p className="text-xs text-destructive">
+                {errors.jerseyNumber.message}
+              </p>
             )}
           </div>
 
@@ -435,6 +468,7 @@ export default function Roster() {
           />
         </div>
 
+        {/* ✅ Updated social links */}
         <div className="space-y-4">
           <Label>Social Links (Optional)</Label>
           <div className="grid grid-cols-3 gap-4">
@@ -444,13 +478,13 @@ export default function Roster() {
               className="bg-secondary border-border"
             />
             <Input
-              {...register("socials.twitter")}
-              placeholder="@twitter"
+              {...register("socials.tiktok")}
+              placeholder="@tiktok"
               className="bg-secondary border-border"
             />
             <Input
-              {...register("socials.linkedin")}
-              placeholder="LinkedIn URL"
+              {...register("socials.ultiscore")}
+              placeholder="Ultiscore URL"
               className="bg-secondary border-border"
             />
           </div>

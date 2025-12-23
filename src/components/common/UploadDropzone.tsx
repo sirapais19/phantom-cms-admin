@@ -19,20 +19,17 @@ interface UploadDropzoneProps {
   /** Max ORIGINAL file size before processing (bytes) */
   maxSize?: number;
 
-  /**
-   * Max PROCESSED blob size (bytes) AFTER resize/compress.
-   * This is the important one to avoid huge base64 JSON payloads.
-   */
-  maxProcessedSize?: number;
-
   /** Resize to this max width (keeps aspect ratio). Helps reduce payload. */
   maxWidth?: number;
 
   /** Output image mime type after processing */
   outputType?: "image/jpeg" | "image/webp" | "image/png";
 
-  /** Compression quality (only applies to jpeg/webp) */
+  /** Start compression quality (only applies to jpeg/webp) */
   quality?: number;
+
+  /** Target processed image size (bytes). Will try to compress down to this. */
+  maxOutputSize?: number;
 
   className?: string;
   placeholder?: string;
@@ -43,7 +40,6 @@ function bytesToMB(bytes: number) {
 }
 
 function parseAccept(accept: string) {
-  // supports "image/png,image/jpeg" OR ".png,.jpg" OR "image/*"
   return accept
     .split(",")
     .map((s) => s.trim().toLowerCase())
@@ -61,30 +57,59 @@ function isFileAccepted(file: File, accept: string) {
 
   return rules.some((rule) => {
     if (rule.startsWith(".")) return fileName.endsWith(rule);
-    return mime === rule; // mime match, e.g. image/jpeg
+    return mime === rule; // e.g. image/jpeg
   });
 }
 
-async function fileToDataUrl(fileOrBlob: Blob): Promise<string> {
+async function blobToDataUrl(blob: Blob): Promise<string> {
   return await new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error("Failed to read file"));
     reader.onload = () => resolve(reader.result as string);
-    reader.readAsDataURL(fileOrBlob);
+    reader.readAsDataURL(blob);
   });
 }
 
-async function compressAndResizeImage(
+async function decodeToBitmap(file: File): Promise<ImageBitmap> {
+  // createImageBitmap is fast (most browsers)
+  try {
+    return await createImageBitmap(file);
+  } catch {
+    // fallback: HTMLImageElement decode
+    const url = URL.createObjectURL(file);
+    try {
+      const img = new Image();
+      img.decoding = "async";
+      img.src = url;
+      await img.decode();
+
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("Canvas not supported");
+      ctx.drawImage(img, 0, 0);
+
+      // convert to ImageBitmap
+      return await createImageBitmap(canvas);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+}
+
+async function renderCompressed(
   file: File,
   maxWidth: number,
   outputType: "image/jpeg" | "image/webp" | "image/png",
   quality: number
 ): Promise<Blob> {
-  const bitmap = await createImageBitmap(file);
+  const bitmap = await decodeToBitmap(file);
 
   const scale = bitmap.width > maxWidth ? maxWidth / bitmap.width : 1;
-  const targetW = Math.round(bitmap.width * scale);
-  const targetH = Math.round(bitmap.height * scale);
+  const targetW = Math.max(1, Math.round(bitmap.width * scale));
+  const targetH = Math.max(1, Math.round(bitmap.height * scale));
 
   const canvas = document.createElement("canvas");
   canvas.width = targetW;
@@ -110,20 +135,23 @@ export function UploadDropzone({
   value,
   onChange,
 
-  // ✅ allow JPG explicitly + common formats
-  accept = "image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp",
+  // ✅ JPG is image/jpeg, so this ALLOWS .jpg/.jpeg
+  accept = "image/png,image/jpeg,image/webp",
 
-  // ✅ allow big original file (before processing)
+  // ✅ allow larger originals
   maxSize = 30 * 1024 * 1024, // 30MB
 
-  // ✅ limit processed blob to keep base64 JSON safe
-  // base64 adds ~33% size overhead, so keep processed <= ~12MB typically safe
-  maxProcessedSize = 12 * 1024 * 1024, // 12MB
-
-  // ✅ defaults that reduce payload
+  // ✅ resize to reduce huge payloads
   maxWidth = 1400,
+
+  // ✅ export to jpeg (good compression)
   outputType = "image/jpeg",
+
+  // ✅ starting quality
   quality = 0.82,
+
+  // ✅ try to keep final upload small (important for JSON + DB)
+  maxOutputSize = 1.5 * 1024 * 1024, // ~1.5MB
 
   className,
   placeholder = "Drop an image here or click to upload",
@@ -133,7 +161,6 @@ export function UploadDropzone({
 
   const handleFile = useCallback(
     async (file: File) => {
-      // 1) type validation
       if (!isFileAccepted(file, accept)) {
         alert(
           `Invalid file type.\nAllowed: ${accept}\nSelected: ${file.type || file.name}`
@@ -141,54 +168,46 @@ export function UploadDropzone({
         return;
       }
 
-      // 2) original size validation
       if (file.size > maxSize) {
         alert(
-          `File is too large.\nMax allowed: ${bytesToMB(
-            maxSize
-          )}MB\nSelected: ${bytesToMB(file.size)}MB`
+          `File is too large.\nMax allowed: ${bytesToMB(maxSize)}MB\nSelected: ${bytesToMB(file.size)}MB`
         );
         return;
       }
 
       try {
-        // 3) compress + resize
-        const processedBlob = await compressAndResizeImage(
-          file,
-          maxWidth,
-          outputType,
-          quality
-        );
+        // We will try multiple passes to hit maxOutputSize
+        let currentMaxWidth = maxWidth;
+        let currentQuality = quality;
 
-        // 4) processed size validation (important)
-        if (processedBlob.size > maxProcessedSize) {
-          alert(
-            `Image is still too large after processing.\nProcessed: ${bytesToMB(
-              processedBlob.size
-            )}MB\nMax processed: ${bytesToMB(
-              maxProcessedSize
-            )}MB\n\nTry:\n- Use smaller image\n- Reduce maxWidth (e.g. 1000)\n- Reduce quality (e.g. 0.7)\n- Use WEBP outputType`
-          );
-          return;
+        let blob = await renderCompressed(file, currentMaxWidth, outputType, currentQuality);
+
+        // If still too big, reduce quality and/or width gradually
+        // (PNG won't shrink much — jpeg/webp will)
+        const minQuality = 0.5;
+        const minWidth = 900;
+
+        while (blob.size > maxOutputSize) {
+          if (outputType !== "image/png" && currentQuality > minQuality) {
+            currentQuality = Math.max(minQuality, currentQuality - 0.08);
+          } else if (currentMaxWidth > minWidth) {
+            currentMaxWidth = Math.max(minWidth, Math.round(currentMaxWidth * 0.85));
+          } else {
+            // can't reduce more safely
+            break;
+          }
+
+          blob = await renderCompressed(file, currentMaxWidth, outputType, currentQuality);
         }
 
-        // 5) convert to data URL
-        const dataUrl = await fileToDataUrl(processedBlob);
+        const dataUrl = await blobToDataUrl(blob);
         onChange(dataUrl);
       } catch (err: any) {
         console.error(err);
         alert(err?.message || "Failed to process image");
       }
     },
-    [
-      accept,
-      maxSize,
-      maxProcessedSize,
-      maxWidth,
-      outputType,
-      quality,
-      onChange,
-    ]
+    [accept, maxSize, maxWidth, outputType, quality, maxOutputSize, onChange]
   );
 
   const handleDrop = useCallback(
@@ -207,7 +226,7 @@ export function UploadDropzone({
       const file = e.target.files?.[0];
       if (file) void handleFile(file);
 
-      // allow re-uploading same file again
+      // allow uploading same file again
       e.target.value = "";
     },
     [handleFile]
@@ -263,7 +282,6 @@ export function UploadDropzone({
                 <ImageIcon className="h-6 w-6 text-muted-foreground" />
               )}
             </div>
-
             <div>
               <p className="text-sm text-muted-foreground">{placeholder}</p>
               <p className="text-xs text-muted-foreground mt-1">
@@ -271,9 +289,9 @@ export function UploadDropzone({
                 <br />
                 Max original size: {bytesToMB(maxSize)}MB
                 <br />
-                Max processed size: {bytesToMB(maxProcessedSize)}MB
+                Auto resize: max {maxWidth}px
                 <br />
-                Auto resize: max {maxWidth}px, export: {outputType}, q={quality}
+                Export: {outputType} (target ≤ {bytesToMB(maxOutputSize)}MB)
               </p>
             </div>
           </div>

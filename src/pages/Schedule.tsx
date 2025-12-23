@@ -415,7 +415,7 @@ export default function Schedule() {
             <Label>Division</Label>
             <Select
               value={watch("division")}
-              onValueChange={(value: "Open" | "Mixed") => setValue("division", value)}
+              onValueChange={(value: "Open" | "Mixed" ) => setValue("division", value)}
             >
               <SelectTrigger className="bg-secondary border-border">
                 <SelectValue />

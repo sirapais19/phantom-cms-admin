@@ -8,7 +8,7 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Roster from "./pages/Roster";
 import Achievements from "./pages/Achievements";
-import TeamMedia from "./pages/TeamMedia";
+// ✅ remove TeamMedia import (optional, but cleaner)
 import Schedule from "./pages/Schedule";
 import Gallery from "./pages/Gallery";
 import Videos from "./pages/Videos";
@@ -28,11 +28,18 @@ const App = () => (
         <Routes>
           <Route path="/" element={<Navigate to="/login" replace />} />
           <Route path="/login" element={<Login />} />
+
           <Route path="/dashboard" element={<DashboardLayout />}>
             <Route index element={<Dashboard />} />
             <Route path="roster" element={<Roster />} />
             <Route path="achievements" element={<Achievements />} />
-            <Route path="team-media" element={<TeamMedia />} />
+
+            {/* ✅ BLOCK Team Media page (redirect away) */}
+            <Route
+              path="team-media"
+              element={<Navigate to="/dashboard" replace />}
+            />
+
             <Route path="schedule" element={<Schedule />} />
             <Route path="gallery" element={<Gallery />} />
             <Route path="videos" element={<Videos />} />
@@ -40,6 +47,7 @@ const App = () => (
             <Route path="sponsors" element={<Sponsors />} />
             <Route path="settings" element={<Settings />} />
           </Route>
+
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
