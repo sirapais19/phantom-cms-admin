@@ -6,12 +6,12 @@ import { createClient } from "@supabase/supabase-js";
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+
+// ✅ Railway commonly routes to 8080 (and shows it in Networking)
+const PORT = Number(process.env.PORT) || 8080;
 
 /**
- * ✅ IMPORTANT FIX:
- * Prevent Express from returning 304 Not Modified (ETag caching).
- * Your frontend likely calls response.json(), but 304 has no body -> page becomes blank.
+ * ✅ Prevent 304 Not Modified (ETag caching).
  */
 app.set("etag", false);
 
@@ -24,42 +24,36 @@ app.use((req, res, next) => {
 });
 
 /* -------------------------------------------------
-   ✅ CORS (allow Vercel + localhost) ✅ NO CRASH
-   IMPORTANT: use RegExp for app.options to avoid
-   PathError: Missing parameter name at index ... '/*'
+   Body parsers
 -------------------------------------------------- */
+app.use(express.json({ limit: "60mb" }));
+app.use(express.urlencoded({ extended: true, limit: "60mb" }));
 
-// NOTE: "Origin" header NEVER includes a trailing slash.
-// So make sure you store origins WITHOUT trailing slash.
+/* -------------------------------------------------
+   ✅ CORS (allow Vercel + localhost)
+   IMPORTANT: app.options must use RegExp (NOT "/*" or "*")
+-------------------------------------------------- */
 const allowedOrigins = new Set([
   "http://localhost:5173",
   "http://localhost:8080",
 
-  // Add your Vercel production domain (if you have it)
-  "https://phantom-cms-admin.vercel.app",
-
-  // Your branch domain shown in your code (ok to keep)
+  // ✅ NO trailing slash
   "https://phantom-cms-admin-git-main-siraps-projects.vercel.app",
 ]);
 
-// ✅ allow Vercel preview deployments automatically
 const vercelPreviewRegex =
   /^https:\/\/phantom-cms-admin-[a-z0-9-]+-siraps-projects\.vercel\.app$/i;
 
 const corsOptions = {
   origin: (origin, callback) => {
-    // Postman/curl may not send Origin
+    // direct browser open / curl / postman might not send Origin
     if (!origin) return callback(null, true);
 
-    // Normalize (just in case)
-    const o = String(origin).trim();
-
-    if (allowedOrigins.has(o) || vercelPreviewRegex.test(o)) {
+    if (allowedOrigins.has(origin) || vercelPreviewRegex.test(origin)) {
       return callback(null, true);
     }
 
-    console.log("❌ Blocked by CORS:", o);
-    // IMPORTANT: do NOT throw error here (avoid weird crashes)
+    console.log("❌ Blocked by CORS:", origin);
     return callback(null, false);
   },
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -67,45 +61,32 @@ const corsOptions = {
   optionsSuccessStatus: 204,
 };
 
-// Important: caches/proxies treat different origins differently
+// Ensure caches/proxies treat different origins differently
 app.use((req, res, next) => {
   res.setHeader("Vary", "Origin");
   next();
 });
 
 app.use(cors(corsOptions));
-app.options(/.*/, cors(corsOptions)); // ✅ IMPORTANT (RegExp) - prevents crash
+app.options(/.*/, cors(corsOptions)); // ✅ prevents PathError crash
 
 /* -------------------------------------------------
-   Basic routes (helpful for testing)
+   ✅ Supabase init (safe)
 -------------------------------------------------- */
-app.get("/", (req, res) => res.send("Phantom API is running ✅"));
-app.get("/api/health", (req, res) => res.json({ ok: true }));
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-/* -------------------------------------------------
-   Body parsers
--------------------------------------------------- */
-app.use(express.json({ limit: "60mb" }));
-app.use(express.urlencoded({ extended: true, limit: "60mb" }));
-
-/* -------------------------------------------------
-   Supabase client (with safety logs)
--------------------------------------------------- */
-if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-  console.error(
-    "❌ Missing env: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY (Railway Variables)."
-  );
+let supabase = null;
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+  console.error("❌ Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in environment.");
+  console.error("➡️  Set them in Railway → Variables (and redeploy).");
+} else {
+  supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 }
-
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
 
 /* -------------------------
    Helpers
 -------------------------- */
-
 function toTitleCase(s) {
   if (!s) return "";
   const str = String(s).toLowerCase();
@@ -126,10 +107,8 @@ function normalizeDate(value) {
 
   const str = String(value).trim();
 
-  // YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
 
-  // dd/mm/yyyy
   const m = str.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
   if (m) return `${m[3]}-${m[2]}-${m[1]}`;
 
@@ -139,36 +118,22 @@ function normalizeDate(value) {
   return null;
 }
 
-/**
- * ✅ More tolerant boolean parser:
- * supports true/false, 1/0, "true"/"false", "on"/"off", "yes"/"no"
- */
 function boolFromAny(v) {
   if (v === true || v === false) return v;
-
-  // handle numbers
   if (v === 1) return true;
   if (v === 0) return false;
 
   const s = String(v ?? "").trim().toLowerCase();
   if (s === "1" || s === "true" || s === "on" || s === "yes") return true;
   if (s === "0" || s === "false" || s === "off" || s === "no") return false;
-
   return false;
 }
 
-/**
- * Parse base64 data URL:
- * data:image/jpeg;base64,xxxxx
- */
 function parseDataUrl(dataUrl) {
   if (!dataUrl || typeof dataUrl !== "string") return null;
   const match = dataUrl.match(/^data:(.+);base64,(.+)$/);
   if (!match) return null;
-
-  const mime = match[1];
-  const b64 = match[2];
-  return { mime, b64 };
+  return { mime: match[1], b64: match[2] };
 }
 
 function extFromMime(mime) {
@@ -184,19 +149,15 @@ function extFromMime(mime) {
   }
 }
 
-/**
- * Upload DataURL to Supabase Storage bucket and return public URL
- */
 async function uploadDataUrlToStorage({ bucket, folder, dataUrl, filenameBase }) {
+  if (!supabase) throw new Error("Supabase not configured (missing env vars).");
+
   const parsed = parseDataUrl(dataUrl);
   if (!parsed) throw new Error("Invalid image dataUrl");
 
   const { mime, b64 } = parsed;
   const ext = extFromMime(mime);
-
   const buffer = Buffer.from(b64, "base64");
-
-  // use deterministic filename so each update replaces the old file
   const path = `${folder}/${filenameBase}.${ext}`;
 
   const { error: uploadError } = await supabase.storage
@@ -213,11 +174,9 @@ async function uploadDataUrlToStorage({ bucket, folder, dataUrl, filenameBase })
   return data.publicUrl;
 }
 
-// ✅ Count helper (safe)
 async function safeCount(builder) {
   const { count, error } = await builder;
   if (error) {
-    // If table doesn't exist yet (e.g., news), return 0 instead of crashing dashboard
     if (error.code === "42P01") return 0;
     throw error;
   }
@@ -225,7 +184,7 @@ async function safeCount(builder) {
 }
 
 /* -------------------------
-   Players mapping
+   Mapping
 -------------------------- */
 function mapDbToUiPlayer(p) {
   return {
@@ -233,11 +192,7 @@ function mapDbToUiPlayer(p) {
     fullName: p.full_name,
     jerseyNumber: p.jersey_number,
     roleTag:
-      p.role_tag === "CAPTAIN"
-        ? "Captain"
-        : p.role_tag === "COACH"
-        ? "Coach"
-        : "Player",
+      p.role_tag === "CAPTAIN" ? "Captain" : p.role_tag === "COACH" ? "Coach" : "Player",
     position: p.position,
     tagline: p.tagline || "",
     bio: p.bio || "",
@@ -256,12 +211,7 @@ function mapUiToDbPlayer(body) {
   return {
     full_name: body.fullName,
     jersey_number: body.jerseyNumber,
-    role_tag:
-      body.roleTag === "Captain"
-        ? "CAPTAIN"
-        : body.roleTag === "Coach"
-        ? "COACH"
-        : "PLAYER",
+    role_tag: body.roleTag === "Captain" ? "CAPTAIN" : body.roleTag === "Coach" ? "COACH" : "PLAYER",
     position: body.position,
     tagline: body.tagline || null,
     bio: body.bio || null,
@@ -273,9 +223,6 @@ function mapUiToDbPlayer(body) {
   };
 }
 
-/* -------------------------
-   Achievements mapping
--------------------------- */
 function mapDbToUiAchievement(a) {
   return {
     id: a.id,
@@ -291,11 +238,7 @@ function mapDbToUiAchievement(a) {
 }
 
 function mapUiToDbAchievement(body) {
-  const rawFeatured =
-    body.isFeatured ??
-    body.is_featured ??
-    body.featured ??
-    body.isFeaturedAchievement;
+  const rawFeatured = body.isFeatured ?? body.is_featured ?? body.featured ?? body.isFeaturedAchievement;
 
   return {
     year: Number(body.year),
@@ -304,15 +247,10 @@ function mapUiToDbAchievement(body) {
     category: body.category || null,
     is_featured: boolFromAny(rawFeatured),
     sort_order:
-      body.sortOrder !== undefined && body.sortOrder !== null
-        ? Number(body.sortOrder)
-        : 0,
+      body.sortOrder !== undefined && body.sortOrder !== null ? Number(body.sortOrder) : 0,
   };
 }
 
-/* -------------------------
-   Tournaments mapping
--------------------------- */
 function mapDbToUiTournament(t) {
   return {
     id: t.id,
@@ -331,14 +269,9 @@ function mapDbToUiTournament(t) {
 
 function mapUiToDbTournament(body) {
   const isNext =
-    body.isNext ??
-    body.is_next ??
-    body.featuredNextTournament ??
-    body.isFeaturedNext ??
-    false;
+    body.isNext ?? body.is_next ?? body.featuredNextTournament ?? body.isFeaturedNext ?? false;
 
-  const isFeatured =
-    body.isFeatured ?? body.is_featured ?? body.featured ?? false;
+  const isFeatured = body.isFeatured ?? body.is_featured ?? body.featured ?? false;
 
   return {
     name: body.name ?? body.tournamentName ?? body.tournament_name,
@@ -353,7 +286,7 @@ function mapUiToDbTournament(body) {
 }
 
 /* -------------------------
-   Team Media helpers
+   Team Media
 -------------------------- */
 const TEAM_MEDIA_BUCKET = "team-media";
 const TEAM_MEDIA_FOLDER = "assets";
@@ -389,18 +322,38 @@ function pickMediaField(type) {
   return null;
 }
 
+/* -------------------------------------------------
+   Routes
+-------------------------------------------------- */
+app.get("/", (req, res) => res.send("Phantom API is running ✅"));
+
+app.get("/api/health", (req, res) => {
+  return res.json({
+    ok: true,
+    port: PORT,
+    supabaseConfigured: !!supabase,
+  });
+});
+
+// ✅ Guard: if Supabase env missing, return helpful error (instead of hanging)
+app.use("/api", (req, res, next) => {
+  if (!supabase) {
+    return res.status(500).json({
+      error: "Supabase is not configured on server. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Railway Variables.",
+    });
+  }
+  next();
+});
+
 /* -------------------------
-   ✅ DASHBOARD
+   Dashboard
 -------------------------- */
 app.get("/api/dashboard", async (req, res) => {
   try {
     const today = new Date().toISOString().slice(0, 10);
 
     const activePlayers = await safeCount(
-      supabase
-        .from("players")
-        .select("id", { count: "exact", head: true })
-        .eq("status", "ACTIVE")
+      supabase.from("players").select("id", { count: "exact", head: true }).eq("status", "ACTIVE")
     );
 
     const achievements = await safeCount(
@@ -416,10 +369,7 @@ app.get("/api/dashboard", async (req, res) => {
     );
 
     const publishedNews = await safeCount(
-      supabase
-        .from("news")
-        .select("id", { count: "exact", head: true })
-        .eq("status", "PUBLISHED")
+      supabase.from("news").select("id", { count: "exact", head: true }).eq("status", "PUBLISHED")
     );
 
     const limit = 10;
@@ -449,7 +399,6 @@ app.get("/api/dashboard", async (req, res) => {
         .select("id, title, status, created_at, updated_at")
         .order("updated_at", { ascending: false })
         .limit(limit);
-
       if (tmp.error && tmp.error.code !== "42P01") throw tmp.error;
       newsRecent = tmp;
     } catch {
@@ -515,11 +464,7 @@ app.get("/api/dashboard", async (req, res) => {
    Players
 -------------------------- */
 app.get("/api/players", async (req, res) => {
-  const { data, error } = await supabase
-    .from("players")
-    .select("*")
-    .order("created_at", { ascending: false });
-
+  const { data, error } = await supabase.from("players").select("*").order("created_at", { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
   res.json((data || []).map(mapDbToUiPlayer));
 });
@@ -527,13 +472,9 @@ app.get("/api/players", async (req, res) => {
 app.post("/api/players", async (req, res) => {
   const payload = mapUiToDbPlayer(req.body);
 
-  const { data, error } = await supabase
-    .from("players")
-    .insert(payload)
-    .select("*")
-    .single();
-
+  const { data, error } = await supabase.from("players").insert(payload).select("*").single();
   if (error) return res.status(500).json({ error: error.message });
+
   res.status(201).json(mapDbToUiPlayer(data));
 });
 
@@ -541,14 +482,9 @@ app.put("/api/players/:id", async (req, res) => {
   const { id } = req.params;
   const payload = mapUiToDbPlayer(req.body);
 
-  const { data, error } = await supabase
-    .from("players")
-    .update(payload)
-    .eq("id", id)
-    .select("*")
-    .single();
-
+  const { data, error } = await supabase.from("players").update(payload).eq("id", id).select("*").single();
   if (error) return res.status(500).json({ error: error.message });
+
   res.json(mapDbToUiPlayer(data));
 });
 
@@ -583,13 +519,9 @@ app.post("/api/achievements", async (req, res) => {
     return res.status(400).json({ error: "title and year are required" });
   }
 
-  const { data, error } = await supabase
-    .from("achievements")
-    .insert(payload)
-    .select("*")
-    .single();
-
+  const { data, error } = await supabase.from("achievements").insert(payload).select("*").single();
   if (error) return res.status(500).json({ error: error.message });
+
   res.status(201).json(mapDbToUiAchievement(data));
 });
 
@@ -597,14 +529,9 @@ app.put("/api/achievements/:id", async (req, res) => {
   const { id } = req.params;
   const payload = mapUiToDbAchievement(req.body);
 
-  const { data, error } = await supabase
-    .from("achievements")
-    .update(payload)
-    .eq("id", id)
-    .select("*")
-    .single();
-
+  const { data, error } = await supabase.from("achievements").update(payload).eq("id", id).select("*").single();
   if (error) return res.status(500).json({ error: error.message });
+
   res.json(mapDbToUiAchievement(data));
 });
 
@@ -621,12 +548,9 @@ app.delete("/api/achievements/:id", async (req, res) => {
    Tournaments
 -------------------------- */
 app.get("/api/tournaments", async (req, res) => {
-  const { data, error } = await supabase
-    .from("tournaments")
-    .select("*")
-    .order("start_date", { ascending: true });
-
+  const { data, error } = await supabase.from("tournaments").select("*").order("start_date", { ascending: true });
   if (error) return res.status(500).json({ error: error.message });
+
   res.json((data || []).map(mapDbToUiTournament));
 });
 
@@ -640,13 +564,9 @@ app.post("/api/tournaments", async (req, res) => {
   if (!payload.division) return res.status(400).json({ error: "division is required" });
   if (!payload.status) return res.status(400).json({ error: "status is required" });
 
-  const { data, error } = await supabase
-    .from("tournaments")
-    .insert(payload)
-    .select("*")
-    .single();
-
+  const { data, error } = await supabase.from("tournaments").insert(payload).select("*").single();
   if (error) return res.status(500).json({ error: error.message });
+
   res.status(201).json(mapDbToUiTournament(data));
 });
 
@@ -654,14 +574,9 @@ app.put("/api/tournaments/:id", async (req, res) => {
   const { id } = req.params;
   const payload = mapUiToDbTournament(req.body);
 
-  const { data, error } = await supabase
-    .from("tournaments")
-    .update(payload)
-    .eq("id", id)
-    .select("*")
-    .single();
-
+  const { data, error } = await supabase.from("tournaments").update(payload).eq("id", id).select("*").single();
   if (error) return res.status(500).json({ error: error.message });
+
   res.json(mapDbToUiTournament(data));
 });
 
@@ -675,43 +590,22 @@ app.delete("/api/tournaments/:id", async (req, res) => {
 });
 
 /* -------------------------
-   ✅ TEAM MEDIA
+   Team Media (PUT + POST)
 -------------------------- */
-app.get("/api/team-media", async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from("team_media")
-      .select("*")
-      .eq("id", TEAM_MEDIA_ID)
-      .maybeSingle();
-
-    if (error) return res.status(500).json({ error: error.message });
-    return res.json(mapDbToUiTeamMedia(data));
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: "Failed to load team media" });
-  }
-});
-
 async function handleTeamMediaUpsert(req, res) {
   try {
     const body = req.body || {};
 
-    // -------- format B (single update) --------
+    // format B: single update
     if (body.type && body.dataUrl) {
       const uiField = pickMediaField(body.type);
       if (!uiField) return res.status(400).json({ error: "Invalid type" });
 
       let finalUrl = body.dataUrl;
 
-      // If it's base64, upload to storage
       if (typeof finalUrl === "string" && finalUrl.startsWith("data:")) {
         const filenameBase =
-          uiField === "teamPhotoUrl"
-            ? "team_photo"
-            : uiField === "heroBannerUrl"
-            ? "hero_banner"
-            : "team_logo";
+          uiField === "teamPhotoUrl" ? "team_photo" : uiField === "heroBannerUrl" ? "hero_banner" : "team_logo";
 
         finalUrl = await uploadDataUrlToStorage({
           bucket: TEAM_MEDIA_BUCKET,
@@ -721,7 +615,6 @@ async function handleTeamMediaUpsert(req, res) {
         });
       }
 
-      // Load existing row
       const { data: current, error: curErr } = await supabase
         .from("team_media")
         .select("*")
@@ -743,7 +636,7 @@ async function handleTeamMediaUpsert(req, res) {
       return res.json(mapDbToUiTeamMedia(data));
     }
 
-    // -------- format A (full update) --------
+    // format A: full update
     const ui = {
       teamPhotoUrl: body.teamPhotoUrl ?? body.teamPhoto ?? body.team_photo ?? "",
       heroBannerUrl: body.heroBannerUrl ?? body.heroBanner ?? body.hero_banner ?? "",
@@ -793,27 +686,31 @@ async function handleTeamMediaUpsert(req, res) {
   }
 }
 
+app.get("/api/team-media", async (req, res) => {
+  try {
+    const { data, error } = await supabase.from("team_media").select("*").eq("id", TEAM_MEDIA_ID).maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json(mapDbToUiTeamMedia(data));
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Failed to load team media" });
+  }
+});
+
 app.put("/api/team-media", handleTeamMediaUpsert);
 app.post("/api/team-media", handleTeamMediaUpsert);
 
-/* -------------------------
-   Global error handler
--------------------------- */
-app.use((err, req, res, next) => {
-  console.error("❌ Server error:", err);
-  res.status(500).json({ error: err?.message || "Internal Server Error" });
-});
-
-/* -------------------------
-   Process-level error logs
--------------------------- */
+/* -------------------------------------------------
+   Start + crash visibility
+-------------------------------------------------- */
 process.on("unhandledRejection", (reason) => {
-  console.error("❌ unhandledRejection:", reason);
-});
-process.on("uncaughtException", (err) => {
-  console.error("❌ uncaughtException:", err);
+  console.error("❌ UnhandledRejection:", reason);
 });
 
-app.listen(PORT, () => {
+process.on("uncaughtException", (err) => {
+  console.error("❌ UncaughtException:", err);
+});
+
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ API running on port ${PORT}`);
 });
