@@ -24,19 +24,25 @@ app.use((req, res, next) => {
 });
 
 /* -------------------------------------------------
-   ✅ CORS (allow Vercel + localhost)  ✅ NO CRASH
+   ✅ CORS (allow Vercel + localhost) ✅ NO CRASH
    IMPORTANT: use RegExp for app.options to avoid
    PathError: Missing parameter name at index ... '/*'
 -------------------------------------------------- */
+
+// NOTE: "Origin" header NEVER includes a trailing slash.
+// So make sure you store origins WITHOUT trailing slash.
 const allowedOrigins = new Set([
   "http://localhost:5173",
   "http://localhost:8080",
 
-  // ✅ NO trailing slash
+  // Add your Vercel production domain (if you have it)
+  "https://phantom-cms-admin.vercel.app",
+
+  // Your branch domain shown in your code (ok to keep)
   "https://phantom-cms-admin-git-main-siraps-projects.vercel.app",
 ]);
 
-// ✅ allow your Vercel preview deployments automatically
+// ✅ allow Vercel preview deployments automatically
 const vercelPreviewRegex =
   /^https:\/\/phantom-cms-admin-[a-z0-9-]+-siraps-projects\.vercel\.app$/i;
 
@@ -45,12 +51,16 @@ const corsOptions = {
     // Postman/curl may not send Origin
     if (!origin) return callback(null, true);
 
-    if (allowedOrigins.has(origin) || vercelPreviewRegex.test(origin)) {
+    // Normalize (just in case)
+    const o = String(origin).trim();
+
+    if (allowedOrigins.has(o) || vercelPreviewRegex.test(o)) {
       return callback(null, true);
     }
 
-    console.log("❌ Blocked by CORS:", origin);
-    return callback(new Error(`CORS blocked for origin: ${origin}`));
+    console.log("❌ Blocked by CORS:", o);
+    // IMPORTANT: do NOT throw error here (avoid weird crashes)
+    return callback(null, false);
   },
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
@@ -66,7 +76,11 @@ app.use((req, res, next) => {
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions)); // ✅ IMPORTANT (RegExp) - prevents crash
 
+/* -------------------------------------------------
+   Basic routes (helpful for testing)
+-------------------------------------------------- */
 app.get("/", (req, res) => res.send("Phantom API is running ✅"));
+app.get("/api/health", (req, res) => res.json({ ok: true }));
 
 /* -------------------------------------------------
    Body parsers
@@ -74,7 +88,15 @@ app.get("/", (req, res) => res.send("Phantom API is running ✅"));
 app.use(express.json({ limit: "60mb" }));
 app.use(express.urlencoded({ extended: true, limit: "60mb" }));
 
-// Supabase client
+/* -------------------------------------------------
+   Supabase client (with safety logs)
+-------------------------------------------------- */
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  console.error(
+    "❌ Missing env: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY (Railway Variables)."
+  );
+}
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -268,14 +290,6 @@ function mapDbToUiAchievement(a) {
   };
 }
 
-/**
- * ✅ FIXED:
- * accept more possible frontend keys so "Featured" switch actually saves
- * - isFeatured
- * - is_featured
- * - featured
- * - "on"/"off"
- */
 function mapUiToDbAchievement(body) {
   const rawFeatured =
     body.isFeatured ??
@@ -343,10 +357,6 @@ function mapUiToDbTournament(body) {
 -------------------------- */
 const TEAM_MEDIA_BUCKET = "team-media";
 const TEAM_MEDIA_FOLDER = "assets";
-
-/**
- * Store a SINGLE ROW in public.team_media
- */
 const TEAM_MEDIA_ID = "00000000-0000-0000-0000-000000000001";
 
 function mapDbToUiTeamMedia(row) {
@@ -380,20 +390,17 @@ function pickMediaField(type) {
 }
 
 /* -------------------------
-   Routes
--------------------------- */
-app.get("/api/health", (req, res) => res.json({ ok: true }));
-
-/* -------------------------
    ✅ DASHBOARD
-   GET /api/dashboard
 -------------------------- */
 app.get("/api/dashboard", async (req, res) => {
   try {
     const today = new Date().toISOString().slice(0, 10);
 
     const activePlayers = await safeCount(
-      supabase.from("players").select("id", { count: "exact", head: true }).eq("status", "ACTIVE")
+      supabase
+        .from("players")
+        .select("id", { count: "exact", head: true })
+        .eq("status", "ACTIVE")
     );
 
     const achievements = await safeCount(
@@ -409,7 +416,10 @@ app.get("/api/dashboard", async (req, res) => {
     );
 
     const publishedNews = await safeCount(
-      supabase.from("news").select("id", { count: "exact", head: true }).eq("status", "PUBLISHED")
+      supabase
+        .from("news")
+        .select("id", { count: "exact", head: true })
+        .eq("status", "PUBLISHED")
     );
 
     const limit = 10;
@@ -439,6 +449,7 @@ app.get("/api/dashboard", async (req, res) => {
         .select("id, title, status, created_at, updated_at")
         .order("updated_at", { ascending: false })
         .limit(limit);
+
       if (tmp.error && tmp.error.code !== "42P01") throw tmp.error;
       newsRecent = tmp;
     } catch {
@@ -500,7 +511,9 @@ app.get("/api/dashboard", async (req, res) => {
   }
 });
 
-/** Players */
+/* -------------------------
+   Players
+-------------------------- */
 app.get("/api/players", async (req, res) => {
   const { data, error } = await supabase
     .from("players")
@@ -548,7 +561,9 @@ app.delete("/api/players/:id", async (req, res) => {
   res.status(204).send();
 });
 
-/** Achievements */
+/* -------------------------
+   Achievements
+-------------------------- */
 app.get("/api/achievements", async (req, res) => {
   const { data, error } = await supabase
     .from("achievements")
@@ -602,7 +617,9 @@ app.delete("/api/achievements/:id", async (req, res) => {
   res.status(204).send();
 });
 
-/** Tournaments */
+/* -------------------------
+   Tournaments
+-------------------------- */
 app.get("/api/tournaments", async (req, res) => {
   const { data, error } = await supabase
     .from("tournaments")
@@ -657,7 +674,9 @@ app.delete("/api/tournaments/:id", async (req, res) => {
   res.status(204).send();
 });
 
-/** ✅ TEAM MEDIA */
+/* -------------------------
+   ✅ TEAM MEDIA
+-------------------------- */
 app.get("/api/team-media", async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -674,16 +693,18 @@ app.get("/api/team-media", async (req, res) => {
   }
 });
 
-app.put("/api/team-media", async (req, res) => {
+async function handleTeamMediaUpsert(req, res) {
   try {
     const body = req.body || {};
 
+    // -------- format B (single update) --------
     if (body.type && body.dataUrl) {
       const uiField = pickMediaField(body.type);
       if (!uiField) return res.status(400).json({ error: "Invalid type" });
 
       let finalUrl = body.dataUrl;
 
+      // If it's base64, upload to storage
       if (typeof finalUrl === "string" && finalUrl.startsWith("data:")) {
         const filenameBase =
           uiField === "teamPhotoUrl"
@@ -700,6 +721,7 @@ app.put("/api/team-media", async (req, res) => {
         });
       }
 
+      // Load existing row
       const { data: current, error: curErr } = await supabase
         .from("team_media")
         .select("*")
@@ -721,6 +743,7 @@ app.put("/api/team-media", async (req, res) => {
       return res.json(mapDbToUiTeamMedia(data));
     }
 
+    // -------- format A (full update) --------
     const ui = {
       teamPhotoUrl: body.teamPhotoUrl ?? body.teamPhoto ?? body.team_photo ?? "",
       heroBannerUrl: body.heroBannerUrl ?? body.heroBanner ?? body.hero_banner ?? "",
@@ -768,14 +791,29 @@ app.put("/api/team-media", async (req, res) => {
     console.error(err);
     return res.status(500).json({ error: err.message || "Failed to update team media" });
   }
+}
+
+app.put("/api/team-media", handleTeamMediaUpsert);
+app.post("/api/team-media", handleTeamMediaUpsert);
+
+/* -------------------------
+   Global error handler
+-------------------------- */
+app.use((err, req, res, next) => {
+  console.error("❌ Server error:", err);
+  res.status(500).json({ error: err?.message || "Internal Server Error" });
 });
 
-// Optional: allow POST to behave like PUT (if your frontend uses POST)
-app.post("/api/team-media", async (req, res) => {
-  req.method = "PUT";
-  return app._router.handle(req, res);
+/* -------------------------
+   Process-level error logs
+-------------------------- */
+process.on("unhandledRejection", (reason) => {
+  console.error("❌ unhandledRejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("❌ uncaughtException:", err);
 });
 
 app.listen(PORT, () => {
-  console.log(`✅ API running: http://localhost:${PORT}`);
+  console.log(`✅ API running on port ${PORT}`);
 });
