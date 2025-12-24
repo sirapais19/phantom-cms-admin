@@ -23,14 +23,39 @@ app.use((req, res, next) => {
   next();
 });
 
+// ✅ allow localhost + Vercel + your custom domains (if any)
+const allowedOrigins = new Set([
+  "http://localhost:5173",
+  "http://localhost:8080",
+
+  // ✅ if you have a main vercel domain, put it here:
+  // "https://phantom-cms-admin.vercel.app",
+]);
+
+// ✅ allow Vercel preview deployments like:
+// https://phantom-cms-admin-8c0orpzpc-siraps-projects.vercel.app
+const vercelPreviewRegex =
+  /^https:\/\/phantom-cms-admin-[a-z0-9-]+-siraps-projects\.vercel\.app$/i;
+
 const corsOptions = {
-  origin: ["http://localhost:5173", "http://localhost:8080"],
+  origin: (origin, callback) => {
+    // requests like Postman/curl might not send Origin
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.has(origin) || vercelPreviewRegex.test(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
+  credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
 };
 
 app.use(cors(corsOptions));
-app.options(/.*/, cors(corsOptions));
+app.options("*", cors(corsOptions));
+
 
 // ✅ bigger limit for base64 image payloads
 app.use(express.json({ limit: "60mb" }));
