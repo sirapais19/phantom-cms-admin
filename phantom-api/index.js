@@ -23,7 +23,11 @@ app.use((req, res, next) => {
   next();
 });
 
-// ✅ CORS (allow Vercel + localhost)
+/* -------------------------------------------------
+   ✅ CORS (allow Vercel + localhost)  ✅ NO CRASH
+   IMPORTANT: use RegExp for app.options to avoid
+   PathError: Missing parameter name at index ... '/*'
+-------------------------------------------------- */
 const allowedOrigins = new Set([
   "http://localhost:5173",
   "http://localhost:8080",
@@ -38,6 +42,7 @@ const vercelPreviewRegex =
 
 const corsOptions = {
   origin: (origin, callback) => {
+    // Postman/curl may not send Origin
     if (!origin) return callback(null, true);
 
     if (allowedOrigins.has(origin) || vercelPreviewRegex.test(origin)) {
@@ -45,28 +50,27 @@ const corsOptions = {
     }
 
     console.log("❌ Blocked by CORS:", origin);
-    return callback(null, false); // blocks
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
   },
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
   optionsSuccessStatus: 204,
 };
 
+// Important: caches/proxies treat different origins differently
 app.use((req, res, next) => {
   res.setHeader("Vary", "Origin");
   next();
 });
 
 app.use(cors(corsOptions));
-app.options("/*", cors(corsOptions)); // ✅ important (not "*")
+app.options(/.*/, cors(corsOptions)); // ✅ IMPORTANT (RegExp) - prevents crash
 
 app.get("/", (req, res) => res.send("Phantom API is running ✅"));
 
-
-
-
-
-// ✅ bigger limit for base64 image payloads
+/* -------------------------------------------------
+   Body parsers
+-------------------------------------------------- */
 app.use(express.json({ limit: "60mb" }));
 app.use(express.urlencoded({ extended: true, limit: "60mb" }));
 
@@ -161,12 +165,7 @@ function extFromMime(mime) {
 /**
  * Upload DataURL to Supabase Storage bucket and return public URL
  */
-async function uploadDataUrlToStorage({
-  bucket,
-  folder,
-  dataUrl,
-  filenameBase,
-}) {
+async function uploadDataUrlToStorage({ bucket, folder, dataUrl, filenameBase }) {
   const parsed = parseDataUrl(dataUrl);
   if (!parsed) throw new Error("Invalid image dataUrl");
 
@@ -178,11 +177,13 @@ async function uploadDataUrlToStorage({
   // use deterministic filename so each update replaces the old file
   const path = `${folder}/${filenameBase}.${ext}`;
 
-  const { error: uploadError } = await supabase.storage.from(bucket).upload(path, buffer, {
-    contentType: mime,
-    upsert: true,
-    cacheControl: "3600",
-  });
+  const { error: uploadError } = await supabase.storage
+    .from(bucket)
+    .upload(path, buffer, {
+      contentType: mime,
+      upsert: true,
+      cacheControl: "3600",
+    });
 
   if (uploadError) throw new Error(uploadError.message);
 
@@ -250,7 +251,6 @@ function mapUiToDbPlayer(body) {
   };
 }
 
-
 /* -------------------------
    Achievements mapping
 -------------------------- */
@@ -280,8 +280,8 @@ function mapUiToDbAchievement(body) {
   const rawFeatured =
     body.isFeatured ??
     body.is_featured ??
-    body.featured ?? // ✅ common frontend name
-    body.isFeaturedAchievement; // (optional, harmless)
+    body.featured ??
+    body.isFeaturedAchievement;
 
   return {
     year: Number(body.year),
@@ -323,15 +323,16 @@ function mapUiToDbTournament(body) {
     body.isFeaturedNext ??
     false;
 
-  const isFeatured = body.isFeatured ?? body.is_featured ?? body.featured ?? false;
+  const isFeatured =
+    body.isFeatured ?? body.is_featured ?? body.featured ?? false;
 
   return {
     name: body.name ?? body.tournamentName ?? body.tournament_name,
     start_date: normalizeDate(body.startDate ?? body.start_date),
     end_date: normalizeDate(body.endDate ?? body.end_date),
     location: body.location,
-    division: normalizeEnum(body.division), // "Open" -> "OPEN"
-    status: normalizeEnum(body.status), // "Upcoming" -> "UPCOMING"
+    division: normalizeEnum(body.division),
+    status: normalizeEnum(body.status),
     is_next: boolFromAny(isNext),
     is_featured: boolFromAny(isFeatured),
   };
@@ -357,10 +358,8 @@ function mapDbToUiTeamMedia(row) {
 }
 
 function mapUiToDbTeamMedia(body) {
-  const teamPhoto =
-    body.teamPhotoUrl ?? body.teamPhoto ?? body.team_photo ?? null;
-  const heroBanner =
-    body.heroBannerUrl ?? body.heroBanner ?? body.hero_banner ?? null;
+  const teamPhoto = body.teamPhotoUrl ?? body.teamPhoto ?? body.team_photo ?? null;
+  const heroBanner = body.heroBannerUrl ?? body.heroBanner ?? body.hero_banner ?? null;
   const teamLogo = body.teamLogoUrl ?? body.teamLogo ?? body.team_logo ?? null;
 
   return {
@@ -393,12 +392,8 @@ app.get("/api/dashboard", async (req, res) => {
   try {
     const today = new Date().toISOString().slice(0, 10);
 
-    // Cards
     const activePlayers = await safeCount(
-      supabase
-        .from("players")
-        .select("id", { count: "exact", head: true })
-        .eq("status", "ACTIVE")
+      supabase.from("players").select("id", { count: "exact", head: true }).eq("status", "ACTIVE")
     );
 
     const achievements = await safeCount(
@@ -413,12 +408,10 @@ app.get("/api/dashboard", async (req, res) => {
         .gte("end_date", today)
     );
 
-    // News is optional (safe if table not created yet)
     const publishedNews = await safeCount(
       supabase.from("news").select("id", { count: "exact", head: true }).eq("status", "PUBLISHED")
     );
 
-    // Recent activity
     const limit = 10;
 
     const playersRecent = await supabase
@@ -439,7 +432,6 @@ app.get("/api/dashboard", async (req, res) => {
       .order("updated_at", { ascending: false })
       .limit(limit);
 
-    // News may not exist -> don't crash dashboard
     let newsRecent = { data: [], error: null };
     try {
       const tmp = await supabase
@@ -449,7 +441,7 @@ app.get("/api/dashboard", async (req, res) => {
         .limit(limit);
       if (tmp.error && tmp.error.code !== "42P01") throw tmp.error;
       newsRecent = tmp;
-    } catch (e) {
+    } catch {
       newsRecent = { data: [], error: null };
     }
 
@@ -491,14 +483,12 @@ app.get("/api/dashboard", async (req, res) => {
       .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
       .slice(0, limit);
 
-    // ✅ also return "dashboard-friendly" aliases in case your frontend expects them
     return res.json({
       stats: {
         activePlayers,
         achievements,
         upcomingTournaments,
         publishedNews,
-        // aliases:
         totalPlayers: activePlayers,
         totalAchievements: achievements,
       },
@@ -627,16 +617,11 @@ app.post("/api/tournaments", async (req, res) => {
   const payload = mapUiToDbTournament(req.body);
 
   if (!payload.name) return res.status(400).json({ error: "name is required" });
-  if (!payload.start_date)
-    return res.status(400).json({ error: "startDate is required" });
-  if (!payload.end_date)
-    return res.status(400).json({ error: "endDate is required" });
-  if (!payload.location)
-    return res.status(400).json({ error: "location is required" });
-  if (!payload.division)
-    return res.status(400).json({ error: "division is required" });
-  if (!payload.status)
-    return res.status(400).json({ error: "status is required" });
+  if (!payload.start_date) return res.status(400).json({ error: "startDate is required" });
+  if (!payload.end_date) return res.status(400).json({ error: "endDate is required" });
+  if (!payload.location) return res.status(400).json({ error: "location is required" });
+  if (!payload.division) return res.status(400).json({ error: "division is required" });
+  if (!payload.status) return res.status(400).json({ error: "status is required" });
 
   const { data, error } = await supabase
     .from("tournaments")
@@ -682,7 +667,6 @@ app.get("/api/team-media", async (req, res) => {
       .maybeSingle();
 
     if (error) return res.status(500).json({ error: error.message });
-
     return res.json(mapDbToUiTeamMedia(data));
   } catch (err) {
     console.error(err);
@@ -694,14 +678,12 @@ app.put("/api/team-media", async (req, res) => {
   try {
     const body = req.body || {};
 
-    // -------- format B (single update) --------
     if (body.type && body.dataUrl) {
       const uiField = pickMediaField(body.type);
       if (!uiField) return res.status(400).json({ error: "Invalid type" });
 
       let finalUrl = body.dataUrl;
 
-      // If it's base64, upload to storage
       if (typeof finalUrl === "string" && finalUrl.startsWith("data:")) {
         const filenameBase =
           uiField === "teamPhotoUrl"
@@ -718,7 +700,6 @@ app.put("/api/team-media", async (req, res) => {
         });
       }
 
-      // Load existing row
       const { data: current, error: curErr } = await supabase
         .from("team_media")
         .select("*")
@@ -727,11 +708,7 @@ app.put("/api/team-media", async (req, res) => {
 
       if (curErr) return res.status(500).json({ error: curErr.message });
 
-      const mergedUi = {
-        ...mapDbToUiTeamMedia(current),
-        [uiField]: finalUrl,
-      };
-
+      const mergedUi = { ...mapDbToUiTeamMedia(current), [uiField]: finalUrl };
       const payload = mapUiToDbTeamMedia(mergedUi);
 
       const { data, error } = await supabase
@@ -741,11 +718,9 @@ app.put("/api/team-media", async (req, res) => {
         .single();
 
       if (error) return res.status(500).json({ error: error.message });
-
       return res.json(mapDbToUiTeamMedia(data));
     }
 
-    // -------- format A (full update) --------
     const ui = {
       teamPhotoUrl: body.teamPhotoUrl ?? body.teamPhoto ?? body.team_photo ?? "",
       heroBannerUrl: body.heroBannerUrl ?? body.heroBanner ?? body.hero_banner ?? "",
@@ -788,7 +763,6 @@ app.put("/api/team-media", async (req, res) => {
       .single();
 
     if (error) return res.status(500).json({ error: error.message });
-
     return res.json(mapDbToUiTeamMedia(data));
   } catch (err) {
     console.error(err);
