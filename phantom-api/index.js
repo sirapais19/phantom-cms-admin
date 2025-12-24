@@ -23,38 +23,45 @@ app.use((req, res, next) => {
   next();
 });
 
-// ✅ allow localhost + Vercel + your custom domains (if any)
+// ✅ CORS (allow Vercel + localhost)
 const allowedOrigins = new Set([
   "http://localhost:5173",
   "http://localhost:8080",
 
-  // ✅ if you have a main vercel domain, put it here:
-  // "https://phantom-cms-admin.vercel.app",
+  // ✅ add your Vercel production domain (if you have it)
+  "https://phantom-cms-admin-git-main-siraps-projects.vercel.app/",
 ]);
 
-// ✅ allow Vercel preview deployments like:
-// https://phantom-cms-admin-8c0orpzpc-siraps-projects.vercel.app
+// ✅ allow your Vercel preview deployments automatically
 const vercelPreviewRegex =
   /^https:\/\/phantom-cms-admin-[a-z0-9-]+-siraps-projects\.vercel\.app$/i;
 
 const corsOptions = {
   origin: (origin, callback) => {
-    // requests like Postman/curl might not send Origin
+    // requests like Postman/curl may have no origin
     if (!origin) return callback(null, true);
 
     if (allowedOrigins.has(origin) || vercelPreviewRegex.test(origin)) {
       return callback(null, true);
     }
 
-    return callback(new Error(`CORS blocked for origin: ${origin}`));
+    console.log("❌ Blocked by CORS:", origin);
+    return callback(null, false);
   },
-  credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
+  optionsSuccessStatus: 204,
 };
+
+// Important: ensure caches/proxies treat different origins differently
+app.use((req, res, next) => {
+  res.setHeader("Vary", "Origin");
+  next();
+});
 
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
+
 
 
 // ✅ bigger limit for base64 image payloads
